@@ -8,6 +8,7 @@ filters them to include only those that are completed and have posted results
 import requests
 import pandas as pd
 import time
+import json
 from typing import List, Dict
 
 def fetch_trials(condition: str, max_trials: int = 1000) -> List[Dict]:
@@ -65,9 +66,143 @@ def fetch_trials(condition: str, max_trials: int = 1000) -> List[Dict]:
     return trials_with_results
 
 
+def extract_results_data(trial: Dict) -> Dict:
+    """
+    Extract results data from the trial (outcome measures, analyses, p-values)
+    Returns dictionary with results information
+    """
+    results_data = {
+        "has_results": False,
+        "num_outcome_measures": 0,
+        "num_primary_outcomes": 0,
+        "num_secondary_outcomes": 0,
+        "primary_outcome_titles": None,
+        "primary_outcome_descriptions": None,
+        "primary_outcome_timeframes": None,
+        "primary_analyses_data": None,  # Will store JSON string of all analyses
+        "num_p_values_in_primary": 0,
+        "all_p_values_primary": None,
+        "all_param_values_primary": None,
+        "all_ci_data_primary": None,
+        "baseline_participants": None,
+    }
+    
+    if "resultsSection" not in trial:
+        return results_data
+    
+    results = trial["resultsSection"]
+    results_data["has_results"] = True
+    
+    # Extract baseline participant info
+    if "baselineCharacteristicsModule" in results:
+        baseline = results["baselineCharacteristicsModule"]
+        if "denoms" in baseline:
+            denoms = baseline["denoms"]
+            if denoms and len(denoms) > 0:
+                counts = denoms[0].get("counts", [])
+                if counts:
+                    try:
+                        # Convert all values to int before summing
+                        total_participants = sum(int(c.get("value", 0)) for c in counts if c.get("value"))
+                        results_data["baseline_participants"] = total_participants
+                    except (ValueError, TypeError):
+                        # If conversion fails, skip
+                        pass
+    
+    # Extract outcome measures
+    if "outcomeMeasuresModule" not in results:
+        return results_data
+    
+    outcome_module = results["outcomeMeasuresModule"]
+    if "outcomeMeasures" not in outcome_module:
+        return results_data
+    
+    measures = outcome_module["outcomeMeasures"]
+    results_data["num_outcome_measures"] = len(measures)
+    
+    # Separate primary and secondary outcomes
+    primary_measures = [m for m in measures if m.get("type") == "PRIMARY"]
+    secondary_measures = [m for m in measures if m.get("type") == "SECONDARY"]
+    
+    results_data["num_primary_outcomes"] = len(primary_measures)
+    results_data["num_secondary_outcomes"] = len(secondary_measures)
+    
+    if not primary_measures:
+        return results_data
+    
+    # Extract PRIMARY outcome information
+    primary_titles = []
+    primary_descriptions = []
+    primary_timeframes = []
+    all_primary_analyses = []
+    all_p_values = []
+    all_param_values = []
+    all_ci_data = []
+    
+    for primary in primary_measures:
+        # Basic outcome info
+        primary_titles.append(primary.get("title", ""))
+        primary_descriptions.append(primary.get("description", ""))
+        primary_timeframes.append(primary.get("timeFrame", ""))
+        
+        # Extract analyses from primary outcome
+        analyses = []
+        
+        # Location 1: primary -> analyses (most common)
+        if "analyses" in primary:
+            analyses = primary["analyses"]
+        
+        # Location 2: primary -> classes -> categories -> analyses (alternative structure)
+        elif "classes" in primary:
+            for class_item in primary["classes"]:
+                if "categories" in class_item:
+                    for category in class_item["categories"]:
+                        if "analyses" in category:
+                            analyses.extend(category["analyses"])
+        
+        # Extract p-values and effect sizes from analyses
+        for analysis in analyses:
+            all_primary_analyses.append(analysis)
+            
+            # P-value
+            if "pValue" in analysis:
+                all_p_values.append(analysis["pValue"])
+            
+            # Effect size (paramValue)
+            if "paramValue" in analysis:
+                all_param_values.append(analysis["paramValue"])
+            
+            # Confidence intervals
+            if "ciLowerLimit" in analysis and "ciUpperLimit" in analysis:
+                ci_info = f"[{analysis['ciLowerLimit']}, {analysis['ciUpperLimit']}]"
+                all_ci_data.append(ci_info)
+    
+    # Store as comma-separated strings or JSON
+    results_data["primary_outcome_titles"] = " | ".join(primary_titles)
+    results_data["primary_outcome_descriptions"] = " | ".join(primary_descriptions)
+    results_data["primary_outcome_timeframes"] = " | ".join(primary_timeframes)
+    
+    # Store all analyses as JSON string for detailed inspection
+    if all_primary_analyses:
+        results_data["primary_analyses_data"] = json.dumps(all_primary_analyses)
+    
+    results_data["num_p_values_in_primary"] = len(all_p_values)
+    
+    if all_p_values:
+        results_data["all_p_values_primary"] = ", ".join(all_p_values)
+    
+    if all_param_values:
+        results_data["all_param_values_primary"] = ", ".join(all_param_values)
+    
+    if all_ci_data:
+        results_data["all_ci_data_primary"] = " | ".join(all_ci_data)
+    
+    return results_data
+
+
 def extract_trial_info(trial: Dict) -> Dict:
     """
-    Extract basic trial information - NO LABELING
+    Extract basic trial information + results data
     """
     protocol = trial.get("protocolSection", {})
     identification = protocol.get("identificationModule", {})
@@ -115,7 +250,6 @@ def extract_trial_info(trial: Dict) -> Dict:
         "intervention_model": design_info.get("interventionModel", ""),
         "primary_purpose": design_info.get("primaryPurpose", ""),
         "masking": masking_info.get("masking", ""),
-        "masking_description": masking_info.get("maskingDescription", ""),
         
         # Medical info
         "conditions": ", ".join(conditions.get("conditions", [])),
@@ -125,10 +259,11 @@ def extract_trial_info(trial: Dict) -> Dict:
         # Sponsor
         "sponsor": sponsor.get("leadSponsor", {}).get("name", ""),
         "sponsor_type": sponsor.get("leadSponsor", {}).get("class", ""),
-        
-        # Results availability
-        "has_results": "resultsSection" in trial,
     }
+    
+    # Add results data
+    results_data = extract_results_data(trial)
+    trial_info.update(results_data)
     
     return trial_info
 
@@ -146,8 +281,6 @@ def main():
         print("\nNo trials found!")
         return
     
-    print(f"\nProcessing {len(trials)} trials with results...")
-    
     # Extract info from each trial
     trial_data = []
     for i, trial in enumerate(trials):
@@ -162,21 +295,32 @@ def main():
             nct_id = trial.get("protocolSection", {}).get("identificationModule", {}).get("nctId", "Unknown")
             print(f"  Error processing {nct_id}: {e}")
             continue
-    
-    print(f"\nSuccessfully processed: {len(trial_data)} trials")
+
     
     # Create DataFrame
     df = pd.DataFrame(trial_data)
     
+    # Debug: Check if dataframe is valid
+    if df.empty:
+        print("ERROR: DataFrame is empty!")
+        return
+
+    
+    # Check if phase column exists
+    if 'phase' not in df.columns:
+        print("ERROR: 'phase' column not found in DataFrame!")
+        print(f"Available columns: {list(df.columns)}")
+        return
+    
     # Save File 1: ALL PHASES
-    all_phases_file = "data/t2d_trials_all_phases.csv"
+    all_phases_file = "t2d_trials_all_phases.csv"
     df.to_csv(all_phases_file, index=False)
 
     # Save File 2: PHASE 2 and 3 ONLY
+    print(f"\nFiltering for Phase 2/3...")
     phase_2_3_df = df[df["phase"].isin(["PHASE2", "PHASE3", "PHASE2_PHASE3"])]
-    phase_2_3_file = "data/t2d_trials_phase2_3_SIMPLE.csv"
+    phase_2_3_file = "t2d_trials_phase2_3.csv"
     phase_2_3_df.to_csv(phase_2_3_file, index=False)
-
 
 
 if __name__ == "__main__":
