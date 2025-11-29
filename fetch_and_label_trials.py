@@ -11,22 +11,26 @@ import time
 import json
 from typing import List, Dict
 
-def fetch_trials(condition: str, max_trials: int = 1000) -> List[Dict]:
+def fetch_trials(condition: str) -> List[Dict]:
     """
-    Fetch trials from ClinicalTrials.gov API
-    Filters: COMPLETED status only
+    Fetch ALL trials from ClinicalTrials.gov API (no limit)
+    NO FILTERS - gets all trials regardless of status or results
     """
     base_url = "https://clinicaltrials.gov/api/v2/studies"
     
     all_trials = []
     page_token = None
-    page_size = 100
+    page_size = 1000  # Max allowed by API
     
-    while len(all_trials) < max_trials:
+    print(f"Fetching ALL {condition} trials (no filters, no limits)...")
+    print("This may take a while...\n")
+    
+    while True:  # Continue until no more pages
         params = {
             "query.cond": condition,
-            "filter.overallStatus": "COMPLETED",  # Only completed trials
-            "pageSize": min(page_size, max_trials - len(all_trials)),
+            # NO status filter - get all trials
+            # NO results filter - get all trials
+            "pageSize": page_size,
             "format": "json"
         }
         
@@ -45,12 +49,15 @@ def fetch_trials(condition: str, max_trials: int = 1000) -> List[Dict]:
             all_trials.extend(studies)
             
             with_results = sum(1 for t in all_trials if "resultsSection" in t)
-            print(f"  Fetched {len(all_trials)} trials ({with_results} with results)...")
+            completed = sum(1 for t in all_trials if t.get("protocolSection", {}).get("statusModule", {}).get("overallStatus") == "COMPLETED")
+            print(f"  Fetched {len(all_trials)} trials (completed: {completed}, with results: {with_results})...")
             
+            # Check if there are more pages
             if "nextPageToken" in data and len(studies) == page_size:
                 page_token = data["nextPageToken"]
-                time.sleep(0.5)
+                time.sleep(0.5)  # Be nice to the API
             else:
+                # No more pages
                 break
                 
         except requests.exceptions.RequestException as e:
@@ -59,11 +66,8 @@ def fetch_trials(condition: str, max_trials: int = 1000) -> List[Dict]:
     
     print(f"\nTotal fetched: {len(all_trials)} trials")
     
-    # Filter to only trials with results
-    trials_with_results = [t for t in all_trials if "resultsSection" in t]
-    print(f"Trials with posted results: {len(trials_with_results)}")
-    
-    return trials_with_results
+    # Return ALL trials (no filtering)
+    return all_trials
 
 
 def extract_results_data(trial: Dict) -> Dict:
@@ -270,21 +274,23 @@ def extract_trial_info(trial: Dict) -> Dict:
 
 def main():
     """
-    Main function - fetch T2D trials and create two CSV files
+    Main function - fetch T2D trials and create THREE CSV files
     """
     
-    # Fetch trials
+    # Fetch ALL trials (no limit)
     condition = "Type 2 Diabetes"
-    trials = fetch_trials(condition, max_trials=1000)
+    trials = fetch_trials(condition)
     
     if not trials:
         print("\nNo trials found!")
         return
     
+    print(f"\nProcessing {len(trials)} trials...")
+    
     # Extract info from each trial
     trial_data = []
     for i, trial in enumerate(trials):
-        if (i + 1) % 50 == 0:
+        if (i + 1) % 100 == 0:
             print(f"  Processed {i + 1}/{len(trials)}...")
         
         try:
@@ -295,7 +301,8 @@ def main():
             nct_id = trial.get("protocolSection", {}).get("identificationModule", {}).get("nctId", "Unknown")
             print(f"  Error processing {nct_id}: {e}")
             continue
-
+    
+    print(f"\nSuccessfully processed: {len(trial_data)} trials")
     
     # Create DataFrame
     df = pd.DataFrame(trial_data)
@@ -304,23 +311,29 @@ def main():
     if df.empty:
         print("ERROR: DataFrame is empty!")
         return
-
-    
     # Check if phase column exists
     if 'phase' not in df.columns:
         print("ERROR: 'phase' column not found in DataFrame!")
         print(f"Available columns: {list(df.columns)}")
         return
     
-    # Save File 1: ALL PHASES
+    # Save File 1: ALL PHASES (everything - no filtering)
     all_phases_file = "t2d_trials_all_phases.csv"
     df.to_csv(all_phases_file, index=False)
 
-    # Save File 2: PHASE 2 and 3 ONLY
-    print(f"\nFiltering for Phase 2/3...")
+    # Save File 2: PHASE 1 ONLY
+    phase_1_df = df[df["phase"].isin(["PHASE1", "PHASE1_PHASE2"])]
+    phase_1_file = "t2d_trials_phase1.csv"
+    phase_1_df.to_csv(phase_1_file, index=False)
+    
+    # Save File 3: PHASE 2 and 3
     phase_2_3_df = df[df["phase"].isin(["PHASE2", "PHASE3", "PHASE2_PHASE3"])]
     phase_2_3_file = "t2d_trials_phase2_3.csv"
     phase_2_3_df.to_csv(phase_2_3_file, index=False)
+    
+    status_counts = df['status'].value_counts()
+    for status, count in status_counts.items():
+        print(f"  {status:20s} {count:4d}")
 
 
 if __name__ == "__main__":
