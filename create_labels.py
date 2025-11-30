@@ -124,6 +124,6 @@ if __name__ == '__main__':
     success = success.fillna(0)
     print(success[success['success']==1]) #also 125
 
-    data1.to_csv("data/t2d_DRUGtrials_phase1.csv")
-    success.to_csv("data/t2d_DRUGtrials_phase1_labels.csv")
+    data1.to_csv("data/t2d_DRUG_trials_phase1.csv", index=False)
+    success.to_csv("data/t2d_DRUG_trials_phase1_labels.csv", index=False)
 
