@@ -10,3 +10,5 @@ six==1.17.0
 tzdata==2025.2
 urllib3==2.5.0
 sklearn
+seaborn==0.13.2
+matplotlib==3.9.4
